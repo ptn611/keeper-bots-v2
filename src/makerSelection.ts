@@ -4,7 +4,7 @@ import {
 	divCeil,
 	DLOBNode,
 	ZERO,
-} from '@velocity-exchange/sdk';
+} from '../../protocol-v2/sdk';
 import { MakerNodeMap, MAX_MAKERS_PER_FILL } from './bots/filler';
 
 const PROBABILITY_PRECISION = new BN(1000);
