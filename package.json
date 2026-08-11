@@ -5,7 +5,7 @@
 	"main": "lib/index.js",
 	"license": "Apache-2.0",
 	"dependencies": {
-		"@velocity-exchange/jit-proxy": "0.21.171",
+		"@velocity-exchange/jit-proxy": "file:../jit-proxy/ts/sdk",
 		"@opentelemetry/api": "1.7.0",
 		"@opentelemetry/auto-instrumentations-node": "^0.62.1",
 		"@opentelemetry/exporter-prometheus": "0.31.0",
@@ -20,8 +20,8 @@
 		"@types/minimist": "1.2.5",
 		"@types/mocha": "10.0.6",
 		"@types/node": "24.0.0",
-		"@velocity-exchange/common": "0.0.1",
-		"@velocity-exchange/sdk": "0.0.3",
+		"@velocity-exchange/common": "file:../velocity-common/common-ts",
+		"@velocity-exchange/sdk": "file:../protocol-v2/sdk",
 		"async": "3.2.5",
 		"async-mutex": "0.3.2",
 		"aws-sdk": "2.1511.0",
@@ -54,9 +54,7 @@
 		"color-string": "1.9.1",
 		"simple-swizzle": "0.2.2",
 		"is-arrayish": "0.3.2",
-		"log-symbols": "4.1.0",
-		"@velocity-exchange/sdk": "npm:@velocity-exchange/sdk@0.0.3",
-		"@velocity-exchange/sdk": "0.0.3"
+		"log-symbols": "4.1.0"
 	},
 	"devDependencies": {
 		"@types/chai": "4.3.11",

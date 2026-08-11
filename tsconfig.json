@@ -16,7 +16,7 @@
 		"strict": true,
 		"paths": {
 			"@velocity-exchange/common/clients": [
-				"./node_modules/@velocity-exchange/common/lib/clients"
+				"../velocity-common/common-ts/lib/clients"
 			]
 		}
 	},
