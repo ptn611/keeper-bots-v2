@@ -15,10 +15,10 @@ RUN node -e "\
     const fs = require('fs'); \
     const pkg = JSON.parse(fs.readFileSync('package.json')); \
     pkg.dependencies = pkg.dependencies || {}; \
-    pkg.dependencies['@drift-labs/sdk'] = 'file:./protocol-v2/sdk'; \
+    pkg.dependencies['@velocity-exchange/sdk'] = 'file:./protocol-v2/sdk'; \
     fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));"
 
-RUN node -e "console.log(require('./package.json').dependencies['@drift-labs/sdk'])"
+RUN node -e "console.log(require('./package.json').dependencies['@velocity-exchange/sdk'])"
 
 WORKDIR /app
 RUN yarn && yarn build

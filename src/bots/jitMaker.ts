@@ -30,7 +30,7 @@ import {
 	JitterShotgun,
 	JitterSniper,
 	PriceType,
-} from '@drift-labs/jit-proxy/lib';
+} from '@velocity-exchange/jit-proxy/lib';
 import dotenv from 'dotenv';
 
 dotenv.config();

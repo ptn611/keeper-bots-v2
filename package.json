@@ -5,7 +5,7 @@
 	"main": "lib/index.js",
 	"license": "Apache-2.0",
 	"dependencies": {
-		"@drift-labs/jit-proxy": "0.21.171",
+		"@velocity-exchange/jit-proxy": "0.21.171",
 		"@opentelemetry/api": "1.7.0",
 		"@opentelemetry/auto-instrumentations-node": "^0.62.1",
 		"@opentelemetry/exporter-prometheus": "0.31.0",
@@ -55,7 +55,7 @@
 		"simple-swizzle": "0.2.2",
 		"is-arrayish": "0.3.2",
 		"log-symbols": "4.1.0",
-		"@drift-labs/sdk": "npm:@velocity-exchange/sdk@0.0.3",
+		"@velocity-exchange/sdk": "npm:@velocity-exchange/sdk@0.0.3",
 		"@velocity-exchange/sdk": "0.0.3"
 	},
 	"devDependencies": {

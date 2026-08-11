@@ -10,12 +10,12 @@ if [[ "$BRANCH" = "master" ]]
 then
 	if [[ $(grep -ciE "drift-labs/sdk.*beta.*" ./package.json) -eq 0 ]]
 	then
-		echo "$RED warning: on '$BRANCH' branch but not using a beta release of @drift-labs/sdk $NC"
+		echo "$RED warning: on '$BRANCH' branch but not using a beta release of @velocity-exchange/sdk $NC"
 	fi
 elif [[ "$BRANCH" = "mainnet-beta" ]]
 then
 	if [[ $(grep -ciE "drift-labs/sdk.*beta.*" ./package.json) -gt 0 ]]
 	then
-		echo "$RED warning: on '$BRANCH' branch but using a beta release of @drift-labs/sdk$NC"
+		echo "$RED warning: on '$BRANCH' branch but using a beta release of @velocity-exchange/sdk$NC"
 	fi
 fi

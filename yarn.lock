@@ -148,12 +148,12 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@drift-labs/jit-proxy@npm:0.21.171":
+"@velocity-exchange/jit-proxy@npm:0.21.171":
   version: 0.21.171
-  resolution: "@drift-labs/jit-proxy@npm:0.21.171"
+  resolution: "@velocity-exchange/jit-proxy@npm:0.21.171"
   dependencies:
     "@coral-xyz/anchor": "npm:0.29.0"
-    "@drift-labs/sdk": "npm:2.163.0-beta.0"
+    "@velocity-exchange/sdk": "npm:2.163.0-beta.0"
     "@solana/web3.js": "npm:1.98.0"
     tweetnacl-util: "npm:^0.15.1"
     typescript: "npm:5.4.5"
@@ -161,7 +161,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@drift-labs/sdk@npm:@velocity-exchange/sdk@0.0.3, @velocity-exchange/sdk@npm:0.0.3":
+"@velocity-exchange/sdk@npm:@velocity-exchange/sdk@0.0.3, @velocity-exchange/sdk@npm:0.0.3":
   version: 0.0.3
   resolution: "@velocity-exchange/sdk@npm:0.0.3"
   dependencies:
@@ -3561,7 +3561,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@velocity-exchange/keeper-bots-v2@workspace:."
   dependencies:
-    "@drift-labs/jit-proxy": "npm:0.21.171"
+    "@velocity-exchange/jit-proxy": "npm:0.21.171"
     "@opentelemetry/api": "npm:1.7.0"
     "@opentelemetry/auto-instrumentations-node": "npm:^0.62.1"
     "@opentelemetry/exporter-prometheus": "npm:0.31.0"
