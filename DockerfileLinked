@@ -3,25 +3,27 @@ FROM public.ecr.aws/docker/library/node:24 AS builder
 # Set working dir first so all paths are relative to /app
 WORKDIR /app
 
+# Copy keeper-bots-v2 (build context must be the drift-dex monorepo root)
 COPY ./keeper-bots-v2 .
 
+# Build local monorepo packages referenced via file: deps in package.json
+# Order matters: protocol-v2/sdk is a dep of velocity-common/common-ts and jit-proxy/ts/sdk
 COPY ./protocol-v2/sdk ./protocol-v2/sdk
 WORKDIR /app/protocol-v2/sdk
 RUN yarn && yarn build
 
-# Inject local dependency
-WORKDIR /app
-RUN node -e "\
-    const fs = require('fs'); \
-    const pkg = JSON.parse(fs.readFileSync('package.json')); \
-    pkg.dependencies = pkg.dependencies || {}; \
-    pkg.dependencies['@velocity-exchange/sdk'] = 'file:./protocol-v2/sdk'; \
-    fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));"
+COPY ./velocity-common/common-ts ./velocity-common/common-ts
+WORKDIR /app/velocity-common/common-ts
+RUN bun install && bun run build
 
-RUN node -e "console.log(require('./package.json').dependencies['@velocity-exchange/sdk'])"
-
-WORKDIR /app
+COPY ./jit-proxy/ts/sdk ./jit-proxy/ts/sdk
+WORKDIR /app/jit-proxy/ts/sdk
 RUN yarn && yarn build
+
+# Install keeper-bots-v2 with local deps
+WORKDIR /app
+RUN yarn install
+RUN node esbuild.config.js
 
 # Final minimal image
 FROM public.ecr.aws/docker/library/node:24-alpine

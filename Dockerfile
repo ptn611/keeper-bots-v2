@@ -1,26 +1,29 @@
 FROM public.ecr.aws/docker/library/node:24 AS builder
 
-COPY package.json yarn.lock ./
-
-# Enable Corepack for Yarn v4
-RUN corepack enable && corepack prepare yarn@4 --activate
-
+# Set working dir first so all paths are relative to /app
 WORKDIR /app
 
-COPY package.json yarn.lock ./
+# Copy keeper-bots-v2 (build context must be the drift-dex monorepo root)
+COPY ./keeper-bots-v2 .
 
-COPY . .
+# Build local monorepo packages referenced via file: deps in package.json
+# Order matters: protocol-v2/sdk is a dep of velocity-common/common-ts and jit-proxy/ts/sdk
+COPY ./protocol-v2/sdk ./protocol-v2/sdk
+WORKDIR /app/protocol-v2/sdk
+RUN yarn && yarn build
 
-RUN yarn install --immutable
+COPY ./velocity-common/common-ts ./velocity-common/common-ts
+WORKDIR /app/velocity-common/common-ts
+RUN bun install && bun run build
+
+COPY ./jit-proxy/ts/sdk ./jit-proxy/ts/sdk
+WORKDIR /app/jit-proxy/ts/sdk
+RUN yarn && yarn build
+
+# Install keeper-bots-v2 with local deps
+WORKDIR /app
+RUN yarn install
 RUN node esbuild.config.js
-
-WORKDIR /app/drift-common/common-ts
-RUN yarn install
-RUN yarn run build
-
-WORKDIR /app/drift-common/protocol/sdk
-RUN yarn install
-RUN yarn run build
 
 FROM public.ecr.aws/docker/library/node:24-alpine
 # 'bigint-buffer' native lib for performance
