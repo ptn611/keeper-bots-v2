@@ -804,7 +804,10 @@ export class FillerBot extends TxThreaded implements Bot {
 			fillSlot,
 			mmOraclePriceData as MMOraclePriceData,
 			MarketType.PERP,
-			this.driftClient.getStateAccount()
+			this.driftClient.getStateAccount(),
+			// Last-price source for Last trigger orders (DLOB skips Last nodes
+			// when null/zero and never oracle-fallbacks).
+			market.lastFillPrice ?? null
 		);
 
 		return {
@@ -2384,14 +2387,16 @@ export class FillerBot extends TxThreaded implements Bot {
 		slot: number,
 		mmOraclePriceData: MMOraclePriceData,
 		marketType: MarketType,
-		stateAccount: StateAccount
+		stateAccount: StateAccount,
+		lastTriggerPrice: BN | null = null
 	): NodeToTriggerWithMakers[] {
 		const baseTriggerable = dlob.findNodesToTrigger(
 			marketIndex,
 			slot,
 			mmOraclePriceData.price,
 			marketType,
-			stateAccount
+			stateAccount,
+			lastTriggerPrice
 		);
 		if (baseTriggerable.length > 0) {
 			logger.info(

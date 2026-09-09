@@ -434,13 +434,21 @@ export class TriggerBot implements Bot {
 				);
 			}
 
+			// Last-price source for Last trigger orders (perp: PerpMarket.lastFillPrice;
+			// spot: SpotMarket.lastFillPrice, base markets only; DLOB skips
+			// Last nodes when null/zero and never oracle-fallbacks).
+			const lastTriggerPrice = isVariant(marketType, 'perp')
+				? (market as PerpMarketAccount).lastFillPrice ?? null
+				: (market as SpotMarketAccount).lastFillPrice ?? null;
+
 			const dlob = this.dlobSubscriber!.getDLOB();
 			const nodesToTrigger = dlob.findNodesToTrigger(
 				marketIndex,
 				this.slotSubscriber.getSlot(),
 				triggerPrice,
 				marketType,
-				this.driftClient.getStateAccount()
+				this.driftClient.getStateAccount(),
+				lastTriggerPrice
 			);
 
 			for (const nodeToTrigger of nodesToTrigger) {

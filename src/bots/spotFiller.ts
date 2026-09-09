@@ -1001,7 +1001,10 @@ export class SpotFillerBot implements Bot {
 			fillSlot,
 			oraclePriceData.price,
 			MarketType.SPOT,
-			this.driftClient.getStateAccount()
+			this.driftClient.getStateAccount(),
+			// Last-price source for spot Last trigger orders (base markets only;
+			// DLOB skips Last nodes when null/zero and never oracle-fallbacks).
+			market.lastFillPrice ?? null
 		);
 
 		return {
