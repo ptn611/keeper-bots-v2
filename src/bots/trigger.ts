@@ -9,6 +9,7 @@ import {
 	DLOBSubscriber,
 	PublicKey,
 	BlockhashSubscriber,
+	ClockSubscriber,
 	PriorityFeeSubscriber,
 	isVariant,
 	getVariant,
@@ -102,12 +103,17 @@ export class TriggerBot implements Bot {
 
 	private driftClient: DriftClient;
 	private slotSubscriber: SlotSubscriber;
+	private clockSubscriber!: ClockSubscriber;
 	private globalConfig: GlobalConfig;
 	private triggerConfig: TriggerConfig;
 	private dlobSubscriber?: DLOBSubscriber;
 	private blockhashSubscriber: BlockhashSubscriber;
 	private lookupTableAccounts?: AddressLookupTableAccount[];
 	private triggeringNodes = new Map<string, number>();
+	// Fire-phase outcome keys (user-account PDA + orderId signature) carried
+	// across the fire→ratchet phase boundary (TS-S3-10/TS-S3-11). Cleared after
+	// each sweep.
+	private successfulFireKeys = new Set<string>();
 	private periodicTaskMutex = new Mutex();
 	private intervalIds: Array<NodeJS.Timer> = [];
 	private userMap: UserMap;
@@ -292,6 +298,12 @@ export class TriggerBot implements Bot {
 		});
 		await this.dlobSubscriber.subscribe();
 
+		this.clockSubscriber = new ClockSubscriber(this.driftClient.connection, {
+			commitment: 'finalized',
+			resubTimeoutMs: 5_000,
+		});
+		await this.clockSubscriber.subscribe();
+
 		this.lookupTableAccounts =
 			await this.driftClient.fetchAllLookupTableAccounts();
 
@@ -307,6 +319,7 @@ export class TriggerBot implements Bot {
 		this.intervalIds = [];
 
 		await this.dlobSubscriber!.unsubscribe();
+		await this.clockSubscriber!.unsubscribe();
 		await this.userMap!.unsubscribe();
 	}
 
@@ -425,6 +438,18 @@ export class TriggerBot implements Bot {
 				: oraclePriceData.price;
 			let triggerPrice = freshestOraclePrice;
 
+			if (isVariant(marketType, 'spot')) {
+				// TS-SPOT-1: spot fire-1 discovery uses positive raw-oracle
+				// semantics (mirror on-chain unsigned_abs); skip non-positive.
+				triggerPrice = triggerPrice.abs();
+				if (triggerPrice.isZero()) {
+					logger.warn(
+						`skipping spot fire-1 sweep for market ${marketIndex}: non-positive oracle price`
+					);
+					return;
+				}
+			}
+
 			if (isVariant(marketType, 'perp')) {
 				triggerPrice = getTriggerPrice(
 					market as PerpMarketAccount,
@@ -451,7 +476,20 @@ export class TriggerBot implements Bot {
 				lastTriggerPrice
 			);
 
-			for (const nodeToTrigger of nodesToTrigger) {
+			// Also check queue triggers (TriggerLimit+Queue / TriggerAbsorb)
+			const queueNodesToTrigger = dlob.findQueueNodesToTrigger(
+				marketIndex,
+				this.slotSubscriber.getSlot(),
+				triggerPrice,
+				marketType,
+				this.driftClient.getStateAccount(),
+				lastTriggerPrice
+			);
+
+			const allNodesToTrigger = [...nodesToTrigger, ...queueNodesToTrigger];
+
+			const pendingSends: Array<Promise<unknown>> = [];
+			for (const nodeToTrigger of allNodesToTrigger) {
 				const now = Date.now();
 				const nodeToFillSignature = getNodeToTriggerSignature(nodeToTrigger);
 				const timeStartedToTriggerNode =
@@ -474,139 +512,514 @@ export class TriggerBot implements Bot {
 
 				this.triggeringNodes.set(nodeToFillSignature, Date.now());
 
-				logger.info(
-					`trying to trigger ${marketTypeStr} order on market ${
-						nodeToTrigger.node.order.marketIndex
-					}. user: ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}. oracleUpdate: ${
-						this.updateOracleWithTrigger
-					}. OnChainPrice: ${convertToNumber(
-						oraclePriceData.price
-					)}. OffChainPrice: ${
-						offChainPrice ? convertToNumber(offChainPrice) : 'N/A'
+				try {
+					logger.info(
+						`trying to trigger ${marketTypeStr} order on market ${
+							nodeToTrigger.node.order.marketIndex
+						}. user: ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}. oracleUpdate: ${
+							this.updateOracleWithTrigger
+						}. OnChainPrice: ${convertToNumber(
+							oraclePriceData.price
+						)}. OffChainPrice: ${
+							offChainPrice ? convertToNumber(offChainPrice) : 'N/A'
+						}`
+					);
+
+					const user = await this.userMap!.mustGet(
+						nodeToTrigger.node.userAccount.toString()
+					);
+
+					let cuUnits = 100_000; // base case
+					const activePositions =
+						user.getActivePerpPositions().length +
+						user.getActiveSpotPositions().length;
+					const openOrders = user.getUserAccount().openOrders;
+					cuUnits += activePositions * 15_000;
+					cuUnits += openOrders * 5_000;
+
+					let ixs = [
+						ComputeBudgetProgram.setComputeUnitLimit({
+							units: cuUnits,
+						}),
+						ComputeBudgetProgram.setComputeUnitPrice({
+							microLamports: Math.floor(
+								this.priorityFeeSubscriber.getCustomStrategyResult() *
+									this.driftClient.txSender.getSuggestedPriorityFeeMultiplier() *
+									(this.triggerConfig.triggerPriorityFeeMultiplier ?? 1.0)
+							),
+						}),
+					];
+					if (offChainPrice) {
+						ixs = await this.getOracleUpdateIxs(marketType, marketIndex, ixs);
+					}
+					ixs.push(
+						await this.driftClient.getTriggerOrderIx(
+							new PublicKey(nodeToTrigger.node.userAccount),
+							user.getUserAccount(),
+							nodeToTrigger.node.order
+						)
+					);
+
+					ixs.push(await this.driftClient.getRevertFillIx());
+
+					// const tx = getVersionedTransaction(
+					// 	this.driftClient.wallet.publicKey,
+					// 	ixs,
+					// 	this.lookupTableAccounts!,
+					// 	await this.getBlockhashForTx()
+					// );
+
+					const resp = await simulateAndGetTxWithCUs({
+						ixs,
+						connection: this.driftClient.connection,
+						payerPublicKey: this.driftClient.wallet.publicKey,
+						lookupTableAccounts: this.lookupTableAccounts!,
+						cuLimitMultiplier: 1.2,
+						doSimulation: true,
+						dumpTx: false,
+						recentBlockhash: this.blockhashSubscriber.getLatestBlockhash(
+							1 + Math.floor(Math.random() * 10)
+						)!.blockhash as string,
+					});
+
+					if (resp.simError) {
+						logger.error(
+							`Error (${JSON.stringify(
+								resp.simError
+							)}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+						);
+						continue;
+					} else {
+						if (this.dryRun) {
+							logger.info(
+								`[DRY RUN] Would trigger ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+							);
+						} else {
+							pendingSends.push(
+								this.driftClient
+									.sendTransaction(resp.tx)
+									.then((txSig) => {
+										nodeToTrigger.node.haveTrigger = false;
+										this.triggerCounter!.add(1, {
+											marketType: marketTypeStr,
+											auth: this.driftClient.wallet.publicKey.toString(),
+										});
+										logger.info(
+											`Triggered ${marketTypeStr}. user: ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}: ${
+												txSig.txSig
+											}, cuUnits: ${cuUnits}, activePositions: ${activePositions}, openOrders: ${openOrders}`
+										);
+									})
+									.catch((error) => {
+										nodeToTrigger.node.haveTrigger = false;
+
+										const errorCode = getErrorCode(error);
+										if (
+											errorCode &&
+											!errorCodesToSuppress.includes(errorCode) &&
+											!(error as Error).message.includes(
+												'Transaction was not confirmed'
+											)
+										) {
+											if (errorCode) {
+												this.errorCounter!.add(1, {
+													errorCode: errorCode.toString(),
+												});
+											}
+											logger.error(
+												`Error (${errorCode}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+											);
+											logger.error(error);
+											webhookMessage(
+												`[${
+													this.name
+												}]: :x: Error (${errorCode}) triggering ${marketTypeStr} order for user (account: ${nodeToTrigger.node.userAccount.toString()}) ${marketTypeStr} order: ${nodeToTrigger.node.order.orderId.toString()}\n${
+													error.stack ? error.stack : error.message
+												}`
+											);
+										}
+									})
+									.finally(() => {
+										this.removeTriggeringNodes([nodeToTrigger]);
+									})
+							);
+						}
+					}
+				} finally {
+					// Per-node cleanup on EVERY path (CODE-1): sim/dry-run
+					// branches and sync exceptions escape straight here.
+					nodeToTrigger.node.haveTrigger = false;
+					this.removeTriggeringNodes([nodeToTrigger]);
+				}
+			}
+			await Promise.allSettled(pendingSends);
+		} catch (e) {
+			logger.error(
+				`Unexpected error for ${marketTypeStr} market ${marketIndex.toString()} during triggers`
+			);
+			console.error(e);
+			if (e instanceof Error) {
+				webhookMessage(
+					`[${this.name}]: :x: Uncaught error:\n${
+						e.stack ? e.stack : e.message
 					}`
 				);
+			}
+		}
+	}
 
-				const user = await this.userMap!.mustGet(
-					nodeToTrigger.node.userAccount.toString()
-				);
+	private async tryFireTrailingForMarket(
+		market: PerpMarketAccount | SpotMarketAccount,
+		marketType: MarketType
+	) {
+		const marketIndex = market.marketIndex;
+		const marketTypeStr = getVariant(marketType);
 
-				let cuUnits = 100_000; // base case
-				const activePositions =
-					user.getActivePerpPositions().length +
-					user.getActiveSpotPositions().length;
-				const openOrders = user.getUserAccount().openOrders;
-				cuUnits += activePositions * 15_000;
-				cuUnits += openOrders * 5_000;
+		try {
+			const oraclePriceData = isVariant(marketType, 'perp')
+				? this.driftClient.getOracleDataForPerpMarket(marketIndex)
+				: this.driftClient.getOracleDataForSpotMarket(marketIndex);
 
-				let ixs = [
-					ComputeBudgetProgram.setComputeUnitLimit({
-						units: cuUnits,
-					}),
-					ComputeBudgetProgram.setComputeUnitPrice({
-						microLamports: Math.floor(
-							this.priorityFeeSubscriber.getCustomStrategyResult() *
-								this.driftClient.txSender.getSuggestedPriorityFeeMultiplier() *
-								(this.triggerConfig.triggerPriorityFeeMultiplier ?? 1.0)
-						),
-					}),
-				];
-				if (offChainPrice) {
-					ixs = await this.getOracleUpdateIxs(marketType, marketIndex, ixs);
+			// Last-price source for Last trigger orders
+			const lastTriggerPrice = isVariant(marketType, 'perp')
+				? (market as PerpMarketAccount).lastFillPrice ?? null
+				: (market as SpotMarketAccount).lastFillPrice ?? null;
+
+			const dlob = this.dlobSubscriber!.getDLOB();
+			// Fire sweep sends ALL armed trailing nodes (TS-SPOT-3/TS-1):
+			// no off-chain price filter — on-chain decides.
+			const trailingNodesToFire = dlob.findTrailingStopNodesToFire(
+				marketIndex,
+				this.slotSubscriber.getSlot(),
+				marketType,
+				this.driftClient.getStateAccount(),
+				oraclePriceData,
+				lastTriggerPrice
+			);
+
+			for (const nodeToFire of trailingNodesToFire) {
+				const now = Date.now();
+				const nodeToFillSignature = getNodeToTriggerSignature(nodeToFire);
+				const timeStartedToTriggerNode =
+					this.triggeringNodes.get(nodeToFillSignature);
+				if (timeStartedToTriggerNode) {
+					if (timeStartedToTriggerNode + TRIGGER_ORDER_COOLDOWN_MS > now) {
+						logger.warn(
+							`firing node ${nodeToFillSignature} too soon (${
+								now - timeStartedToTriggerNode
+							}ms since last fire), skipping`
+						);
+						continue;
+					}
 				}
-				ixs.push(
-					await this.driftClient.getTriggerOrderIx(
-						new PublicKey(nodeToTrigger.node.userAccount),
-						user.getUserAccount(),
-						nodeToTrigger.node.order
-					)
+
+				if (nodeToFire.node.haveTrigger) {
+					continue;
+				}
+				nodeToFire.node.haveTrigger = true;
+
+				this.triggeringNodes.set(nodeToFillSignature, Date.now());
+
+				logger.info(
+					`trying to fire trailing stop ${marketTypeStr} order on market ${
+						nodeToFire.node.order.marketIndex
+					}. user: ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
 				);
 
-				ixs.push(await this.driftClient.getRevertFillIx());
-
-				// const tx = getVersionedTransaction(
-				// 	this.driftClient.wallet.publicKey,
-				// 	ixs,
-				// 	this.lookupTableAccounts!,
-				// 	await this.getBlockhashForTx()
-				// );
-
-				const resp = await simulateAndGetTxWithCUs({
-					ixs,
-					connection: this.driftClient.connection,
-					payerPublicKey: this.driftClient.wallet.publicKey,
-					lookupTableAccounts: this.lookupTableAccounts!,
-					cuLimitMultiplier: 1.2,
-					doSimulation: true,
-					dumpTx: false,
-					recentBlockhash: this.blockhashSubscriber.getLatestBlockhash(
-						1 + Math.floor(Math.random() * 10)
-					)!.blockhash as string,
-				});
-
-				if (resp.simError) {
-					logger.error(
-						`Error (${JSON.stringify(
-							resp.simError
-						)}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+				try {
+					const user = await this.userMap!.mustGet(
+						nodeToFire.node.userAccount.toString()
 					);
-					continue;
-				} else {
+
+					let cuUnits = 100_000; // base case
+					const activePositions =
+						user.getActivePerpPositions().length +
+						user.getActiveSpotPositions().length;
+					const openOrders = user.getUserAccount().openOrders;
+					cuUnits += activePositions * 15_000;
+					cuUnits += openOrders * 5_000;
+
+					const ixs = [
+						ComputeBudgetProgram.setComputeUnitLimit({
+							units: cuUnits,
+						}),
+						ComputeBudgetProgram.setComputeUnitPrice({
+							microLamports: Math.floor(
+								this.priorityFeeSubscriber.getCustomStrategyResult() *
+									this.driftClient.txSender.getSuggestedPriorityFeeMultiplier() *
+									(this.triggerConfig.triggerPriorityFeeMultiplier ?? 1.0)
+							),
+						}),
+					];
+
+					ixs.push(
+						await this.driftClient.fireTrailingStopOrder(
+							new PublicKey(nodeToFire.node.userAccount),
+							user.getUserAccount(),
+							nodeToFire.node.order
+						)
+					);
+
+					const resp = await simulateAndGetTxWithCUs({
+						ixs,
+						connection: this.driftClient.connection,
+						payerPublicKey: this.driftClient.wallet.publicKey,
+						lookupTableAccounts: this.lookupTableAccounts!,
+						cuLimitMultiplier: 1.2,
+						doSimulation: true,
+						dumpTx: false,
+						recentBlockhash: this.blockhashSubscriber.getLatestBlockhash(
+							1 + Math.floor(Math.random() * 10)
+						)!.blockhash as string,
+					});
+
+					if (resp.simError) {
+						logger.error(
+							`Error (${JSON.stringify(
+								resp.simError
+							)}) firing trailing stop for user ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
+						);
+						continue; // finally cleans up; key NOT reserved → ratchet fallback may act
+					}
+
 					if (this.dryRun) {
 						logger.info(
-							`[DRY RUN] Would trigger ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
+							`[DRY RUN] Would fire trailing stop for user ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
 						);
-					} else {
-						this.driftClient
-							.sendTransaction(resp.tx)
-							.then((txSig) => {
-								this.triggerCounter!.add(1, {
-									marketType: marketTypeStr,
-									auth: this.driftClient.wallet.publicKey.toString(),
-								});
-								logger.info(
-									`Triggered ${marketTypeStr}. user: ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}: ${
-										txSig.txSig
-									}, cuUnits: ${cuUnits}, activePositions: ${activePositions}, openOrders: ${openOrders}`
-								);
-							})
-							.catch((error) => {
-								nodeToTrigger.node.haveTrigger = false;
-
-								const errorCode = getErrorCode(error);
-								if (
-									errorCode &&
-									!errorCodesToSuppress.includes(errorCode) &&
-									!(error as Error).message.includes(
-										'Transaction was not confirmed'
-									)
-								) {
-									if (errorCode) {
-										this.errorCounter!.add(1, {
-											errorCode: errorCode.toString(),
-										});
-									}
-									logger.error(
-										`Error (${errorCode}) triggering ${marketTypeStr} order for user ${nodeToTrigger.node.userAccount.toString()}-${nodeToTrigger.node.order.orderId.toString()}`
-									);
-									logger.error(error);
-									webhookMessage(
-										`[${
-											this.name
-										}]: :x: Error (${errorCode}) triggering ${marketTypeStr} order for user (account: ${nodeToTrigger.node.userAccount.toString()}) ${marketTypeStr} order: ${nodeToTrigger.node.order.orderId.toString()}\n${
-											error.stack ? error.stack : error.message
-										}`
-									);
-								}
-							})
-							.finally(() => {
-								this.removeTriggeringNodes([nodeToTrigger]);
-							});
+						continue;
 					}
+
+					await this.driftClient.sendTransaction(resp.tx);
+					logger.info(
+						`Fired trailing stop. user: ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}, cuUnits: ${cuUnits}`
+					);
+
+					// TS-S3-11: reserve the key ONLY if the order actually left
+					// the armed state (fired to Market or cancelled Expired). A
+					// non-breach Ok(()) (even with atomic fold) stays OUT so
+					// ratchet still processes it (event freshness).
+					await this.userMap!.sync();
+					const refreshedUser = await this.userMap!.mustGet(
+						nodeToFire.node.userAccount.toString()
+					);
+					const refreshedOrder = refreshedUser.getOrder(
+						nodeToFire.node.order.orderId
+					);
+					if (
+						!refreshedOrder ||
+						!isVariant(refreshedOrder.status, 'open') ||
+						!isVariant(refreshedOrder.orderType, 'trailingStop')
+					) {
+						this.successfulFireKeys.add(nodeToFillSignature);
+					}
+				} catch (e) {
+					logger.error(
+						`Error firing trailing stop for user ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
+					);
+					logger.error(e);
+				} finally {
+					nodeToFire.node.haveTrigger = false;
+					this.removeTriggeringNodes([nodeToFire]);
 				}
 			}
 		} catch (e) {
 			logger.error(
-				`Unexpected error for ${marketTypeStr} market ${marketIndex.toString()} during triggers`
+				`Unexpected error for ${marketTypeStr} market ${marketIndex.toString()} during fire`
+			);
+			console.error(e);
+			if (e instanceof Error) {
+				webhookMessage(
+					`[${this.name}]: :x: Uncaught error:\n${
+						e.stack ? e.stack : e.message
+					}`
+				);
+			}
+		}
+	}
+
+	private async tryRatchetForMarket(
+		market: PerpMarketAccount | SpotMarketAccount,
+		marketType: MarketType
+	) {
+		const marketIndex = market.marketIndex;
+		const marketTypeStr = getVariant(marketType);
+
+		try {
+			const oraclePriceData = isVariant(marketType, 'perp')
+				? this.driftClient.getOracleDataForPerpMarket(marketIndex)
+				: this.driftClient.getOracleDataForSpotMarket(marketIndex);
+
+			// NOTE: the ratchet sweep reads the on-chain oracle data
+			// (`oraclePriceData`) for discovery; the off-chain price helper is
+			// deliberately not used here (dead code removed — lint gate).
+			// Last-price source for Last trigger orders
+			const lastTriggerPrice = isVariant(marketType, 'perp')
+				? (market as PerpMarketAccount).lastFillPrice ?? null
+				: (market as SpotMarketAccount).lastFillPrice ?? null;
+
+			// Fresh fetch was done by the orchestrator between phases; this
+			// snapshot is post-fire. Candidates: non-breach + favorable +
+			// unexpired (unixTs seconds, NOT slot).
+			const dlob = this.dlobSubscriber!.getDLOB();
+			const trailingNodesToFire = dlob.findTrailingStopNodesToRatchet(
+				marketIndex,
+				this.slotSubscriber.getSlot(),
+				marketType,
+				this.driftClient.getStateAccount(),
+				oraclePriceData,
+				lastTriggerPrice,
+				this.clockSubscriber.getUnixTs()
+			);
+
+			const pendingSends: Array<Promise<unknown>> = [];
+			for (const nodeToFire of trailingNodesToFire) {
+				const now = Date.now();
+				const nodeToFillSignature = getNodeToTriggerSignature(nodeToFire);
+				// Skip keys the fire phase already resolved (TS-S3-10/TS-S3-11):
+				// the snapshot may be stale across the phase boundary.
+				if (this.successfulFireKeys.has(nodeToFillSignature)) {
+					continue;
+				}
+				const timeStartedToTriggerNode =
+					this.triggeringNodes.get(nodeToFillSignature);
+				if (timeStartedToTriggerNode) {
+					if (timeStartedToTriggerNode + TRIGGER_ORDER_COOLDOWN_MS > now) {
+						logger.warn(
+							`ratcheting node ${nodeToFillSignature} too soon (${
+								now - timeStartedToTriggerNode
+							}ms since last ratchet), skipping`
+						);
+						continue;
+					}
+				}
+
+				if (nodeToFire.node.haveTrigger) {
+					continue;
+				}
+				nodeToFire.node.haveTrigger = true;
+
+				this.triggeringNodes.set(nodeToFillSignature, Date.now());
+
+				try {
+					logger.info(
+						`trying to ratchet trailing stop ${marketTypeStr} order on market ${
+							nodeToFire.node.order.marketIndex
+						}. user: ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
+					);
+
+					const user = await this.userMap!.mustGet(
+						nodeToFire.node.userAccount.toString()
+					);
+
+					let cuUnits = 100_000; // base case
+					const activePositions =
+						user.getActivePerpPositions().length +
+						user.getActiveSpotPositions().length;
+					const openOrders = user.getUserAccount().openOrders;
+					cuUnits += activePositions * 15_000;
+					cuUnits += openOrders * 5_000;
+
+					const ixs = [
+						ComputeBudgetProgram.setComputeUnitLimit({
+							units: cuUnits,
+						}),
+						ComputeBudgetProgram.setComputeUnitPrice({
+							microLamports: Math.floor(
+								this.priorityFeeSubscriber.getCustomStrategyResult() *
+									this.driftClient.txSender.getSuggestedPriorityFeeMultiplier() *
+									(this.triggerConfig.triggerPriorityFeeMultiplier ?? 1.0)
+							),
+						}),
+					];
+
+					ixs.push(
+						await this.driftClient.getRatchetTrailingStopOrderIx(
+							new PublicKey(nodeToFire.node.userAccount),
+							user.getUserAccount(),
+							nodeToFire.node.order
+						)
+					);
+
+					const resp = await simulateAndGetTxWithCUs({
+						ixs,
+						connection: this.driftClient.connection,
+						payerPublicKey: this.driftClient.wallet.publicKey,
+						lookupTableAccounts: this.lookupTableAccounts!,
+						cuLimitMultiplier: 1.2,
+						doSimulation: true,
+						dumpTx: false,
+						recentBlockhash: this.blockhashSubscriber.getLatestBlockhash(
+							1 + Math.floor(Math.random() * 10)
+						)!.blockhash as string,
+					});
+
+					if (resp.simError) {
+						logger.error(
+							`Error (${JSON.stringify(
+								resp.simError
+							)}) ratcheting trailing stop for user ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
+						);
+						nodeToFire.node.haveTrigger = false;
+						this.removeTriggeringNodes([nodeToFire]);
+						continue;
+					} else {
+						if (this.dryRun) {
+							logger.info(
+								`[DRY RUN] Would ratchet trailing stop for user ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
+							);
+							nodeToFire.node.haveTrigger = false;
+							this.removeTriggeringNodes([nodeToFire]);
+						} else {
+							pendingSends.push(
+								this.driftClient
+									.sendTransaction(resp.tx)
+									.then((txSig) => {
+										logger.info(
+											`Ratcheted trailing stop. user: ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}: ${
+												txSig.txSig
+											}, cuUnits: ${cuUnits}`
+										);
+									})
+									.catch((error) => {
+										nodeToFire.node.haveTrigger = false;
+
+										const errorCode = getErrorCode(error);
+										if (
+											errorCode &&
+											!errorCodesToSuppress.includes(errorCode) &&
+											!(error as Error).message.includes(
+												'Transaction was not confirmed'
+											)
+										) {
+											if (errorCode) {
+												this.errorCounter!.add(1, {
+													errorCode: errorCode.toString(),
+												});
+											}
+											logger.error(
+												`Error ratcheting trailing stop for user ${nodeToFire.node.userAccount.toString()}-${nodeToFire.node.order.orderId.toString()}`
+											);
+											logger.error(error);
+										}
+									})
+									.finally(() => {
+										this.removeTriggeringNodes([nodeToFire]);
+									})
+							);
+						}
+					}
+				} finally {
+					// Per-node cleanup on EVERY path (CODE-2): sim/dry-run/
+					// send branches above also clean up, but exceptions from
+					// mustGet/ix-build/simulate escape straight here.
+					nodeToFire.node.haveTrigger = false;
+					this.removeTriggeringNodes([nodeToFire]);
+				}
+			}
+			await Promise.allSettled(pendingSends);
+		} catch (e) {
+			logger.error(
+				`Unexpected error for ${marketTypeStr} market ${marketIndex.toString()} during ratchet`
 			);
 			console.error(e);
 			if (e instanceof Error) {
@@ -630,14 +1043,53 @@ export class TriggerBot implements Bot {
 		let ran = false;
 		try {
 			await tryAcquire(this.periodicTaskMutex).runExclusive(async () => {
-				await Promise.all([
-					this.driftClient.getPerpMarketAccounts().map((marketAccount) => {
-						this.tryTriggerForMarket(marketAccount, MarketType.PERP);
-					}),
-					this.driftClient.getSpotMarketAccounts().map((marketAccount) => {
-						this.tryTriggerForMarket(marketAccount, MarketType.SPOT);
-					}),
-				]);
+				// CODE-2 med FIX: successfulFireKeys must be cleared even if
+				// updateDLOB() (or any phase) throws between fire and ratchet —
+				// otherwise stale keys suppress ratchet in later rounds.
+				try {
+					// Phase 1 — fire-1 + fire-2 (flattened, fully awaited; every
+					// inner map returns its promises — TS-S3-5).
+					await Promise.all([
+						...this.driftClient
+							.getPerpMarketAccounts()
+							.map((marketAccount) =>
+								this.tryTriggerForMarket(marketAccount, MarketType.PERP)
+							),
+						...this.driftClient
+							.getSpotMarketAccounts()
+							.map((marketAccount) =>
+								this.tryTriggerForMarket(marketAccount, MarketType.SPOT)
+							),
+						...this.driftClient
+							.getPerpMarketAccounts()
+							.map((marketAccount) =>
+								this.tryFireTrailingForMarket(marketAccount, MarketType.PERP)
+							),
+						...this.driftClient
+							.getSpotMarketAccounts()
+							.map((marketAccount) =>
+								this.tryFireTrailingForMarket(marketAccount, MarketType.SPOT)
+							),
+					]);
+					// Fresh DLOB between phases: rebuild runs on a timer, async to
+					// the phase boundary (TS-S3-10).
+					await this.dlobSubscriber!.updateDLOB();
+					// Phase 2 — ratchet fallback.
+					await Promise.all([
+						...this.driftClient
+							.getPerpMarketAccounts()
+							.map((marketAccount) =>
+								this.tryRatchetForMarket(marketAccount, MarketType.PERP)
+							),
+						...this.driftClient
+							.getSpotMarketAccounts()
+							.map((marketAccount) =>
+								this.tryRatchetForMarket(marketAccount, MarketType.SPOT)
+							),
+					]);
+				} finally {
+					this.successfulFireKeys.clear();
+				}
 				ran = true;
 			});
 		} catch (e) {

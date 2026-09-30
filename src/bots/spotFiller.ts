@@ -996,16 +996,21 @@ export class SpotFillerBot implements Bot {
 			this.driftClient.getSpotMarketAccount(market.marketIndex)!
 		);
 
-		const nodesToTrigger = dlob.findNodesToTrigger(
-			market.marketIndex,
-			fillSlot,
-			oraclePriceData.price,
-			MarketType.SPOT,
-			this.driftClient.getStateAccount(),
-			// Last-price source for spot Last trigger orders (base markets only;
-			// DLOB skips Last nodes when null/zero and never oracle-fallbacks).
-			market.lastFillPrice ?? null
-		);
+		// TS-SPOT-2: spot fire-1 discovery uses positive raw-oracle semantics
+		// (mirror on-chain unsigned_abs); skip non-positive (no candidates).
+		const spotTriggerPrice = oraclePriceData.price.abs();
+		const nodesToTrigger = spotTriggerPrice.isZero()
+			? []
+			: dlob.findNodesToTrigger(
+					market.marketIndex,
+					fillSlot,
+					spotTriggerPrice,
+					MarketType.SPOT,
+					this.driftClient.getStateAccount(),
+					// Last-price source for spot Last trigger orders (base markets only;
+					// DLOB skips Last nodes when null/zero and never oracle-fallbacks).
+					market.lastFillPrice ?? null
+			  );
 
 		return {
 			nodesToFill: { nodesToFill, fallbackAskSource, fallbackBidSource },
