@@ -25,6 +25,17 @@ export type BaseBotConfig = {
 
 export type TriggerConfig = BaseBotConfig & {
 	triggerPriorityFeeMultiplier?: number;
+	/**
+	 * Ratchet crank throttle: chỉ gửi tx `ratchetTrailingStopOrder` khi giá đã dịch
+	 * chuyển THUẬN lệch khỏi `trailingPrice` của order ít nhất số này (bps, 10_000 =
+	 * 100%). 0 = tắt throttle (gửi mọi candidate như trước).
+	 *
+	 * An toàn: đây là thuần **tối ưu hoá off-chain**. Quyết định fire luôn do contract
+	 * tự fold giá live rồi evaluate (`fire_trailing_stop_order` atomic-ratchet), nên
+	 * bỏ/thiếu crank chỉ làm ký ức đỉnh bị lệch — KHÔNG thể làm lệnh fire sai hoặc
+	 * không fire. Giá trị mặc định 10 bps = 0,1%, bằng `callbackRate` nhỏ nhất.
+	 */
+	ratchetMinFavorableMoveBps?: number;
 };
 
 export type UserPnlSettlerConfig = BaseBotConfig & {

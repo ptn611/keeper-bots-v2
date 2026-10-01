@@ -23,11 +23,14 @@ import {
 	BN,
 	convertToBN,
 	PRICE_PRECISION,
+	Order,
+	TriggerPriceType,
 	getTriggerPrice,
 	useMedianTriggerPrice,
 	PythLazerPriceFeedArray,
 	PythLazerSubscriber,
 } from '@velocity-exchange/sdk';
+import { favorableMoveExceedsBps } from './trailingRatchet';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
 import { logger } from '../logger';
@@ -56,6 +59,13 @@ import {
 } from '@solana/web3.js';
 
 const TRIGGER_ORDER_COOLDOWN_MS = 10000; // time to wait between triggering an order
+
+// Ratchet crank is an on-chain *optimization* (fire-2 re-folds live price itself),
+// so it gets its own, looser cooldown: it must never lag the peak by much, but each
+// tx costs ~11.4k CU-units × CU_price + 5_000 lamports + 1 slot.
+const RATCHET_ORDER_COOLDOWN_MS = 2000;
+
+const DEFAULT_RATCHET_MIN_FAVORABLE_MOVE_BPS = 10; // 0,1% = min callbackRate
 
 const errorCodesToSuppress = [
 	6111, // Error Message: OrderNotTriggerable.
@@ -837,6 +847,52 @@ export class TriggerBot implements Bot {
 		}
 	}
 
+	/**
+	 * Throttle cho crank ratchet (logic thuần nằm ở
+	 * {@link favorableMoveExceedsBps}).
+	 *
+	 * Fail-safe theo hướng **không bỏ sót**: khi không đủ dữ liệu (thiếu giá, giá 0,
+	 * `trailingPrice = 0`, trigger price type = `Last`) trả `true` ⇒ vẫn gửi tx như
+	 * trước, để contract tự quyết.
+	 */
+	private isFavorableMoveBigEnough(
+		order: Order,
+		oraclePriceData: { price: BN } | null,
+		marketType: MarketType
+	): boolean {
+		const minMoveBps =
+			this.triggerConfig.ratchetMinFavorableMoveBps ??
+			DEFAULT_RATCHET_MIN_FAVORABLE_MOVE_BPS;
+		if (minMoveBps <= 0 || minMoveBps >= 10_000) {
+			return true;
+		}
+
+		// Median trigger price ON ⇒ on-chain dùng `oracle + basis_5min`, khác giá raw
+		// mà ta so ở đây. Không throttle trong cấu hình đó để off-chain không bao giờ
+		// bỏ sót một fold thật (giữ hành vi như trước).
+		if (useMedianTriggerPrice(this.driftClient.getStateAccount())) {
+			return true;
+		}
+
+		// `Last` price type: ref price là last_fill_price, không phải oracle ⇒
+		// không so được ở đây, để qua (fire-2 vẫn tự kiểm).
+		if (isVariant(order.triggerPriceType ?? TriggerPriceType.ORACLE, 'last')) {
+			return true;
+		}
+
+		let refPrice = oraclePriceData?.price;
+		if (refPrice && isVariant(marketType, 'spot')) {
+			refPrice = refPrice.abs();
+		}
+
+		return favorableMoveExceedsBps(
+			order.trailingPrice,
+			refPrice,
+			order.direction,
+			minMoveBps
+		);
+	}
+
 	private async tryRatchetForMarket(
 		market: PerpMarketAccount | SpotMarketAccount,
 		marketType: MarketType
@@ -883,7 +939,7 @@ export class TriggerBot implements Bot {
 				const timeStartedToTriggerNode =
 					this.triggeringNodes.get(nodeToFillSignature);
 				if (timeStartedToTriggerNode) {
-					if (timeStartedToTriggerNode + TRIGGER_ORDER_COOLDOWN_MS > now) {
+					if (timeStartedToTriggerNode + RATCHET_ORDER_COOLDOWN_MS > now) {
 						logger.warn(
 							`ratcheting node ${nodeToFillSignature} too soon (${
 								now - timeStartedToTriggerNode
@@ -891,6 +947,22 @@ export class TriggerBot implements Bot {
 						);
 						continue;
 					}
+				}
+
+				// Throttle by favorable move: bỏ tx ratchet khi giá chưa dịch đủ xa so
+				// với trailingPrice đã lưu (mặc định 10 bps). Mỗi tx ratchet tốn
+				// ~11.4k CU-units × CU_price + 5_000 lamports + 1 slot, nên nhích 1 bps là
+				// lãng phí thuần. AN TOÀN: thuần tối ưu hoá — contract tự fold giá live
+				// trong fire-2 rồi mới quyết định, nên crank thiếu không thể làm lệnh
+				// fire sai/không fire (chỉ lệch ký ức đỉnh).
+				if (
+					!this.isFavorableMoveBigEnough(
+						nodeToFire.node.order,
+						oraclePriceData,
+						marketType
+					)
+				) {
+					continue;
 				}
 
 				if (nodeToFire.node.haveTrigger) {
@@ -1038,11 +1110,30 @@ export class TriggerBot implements Bot {
 		}
 	}
 
+	/**
+	 * Dọn entry `triggeringNodes` đã cũ hơn mọi cooldown đang dùng.
+	 *
+	 * Cooldown chỉ có ý nghĩa trong `TRIGGER_ORDER_COOLDOWN_MS` /
+	 * `RATCHET_ORDER_COOLDOWN_MS`; sau đó entry đó không bao giờ chặn gì nữa
+	 * nhưng vẫn chiếm chỗ. Không prune ⇒ Map phình theo số order signature từng
+	 * thấy (mỗi order đóng/fired lại tạo signature mới) ⇒ rò bộ nhớ khi bot
+	 * chạy lâu. Gọi 1 lần mỗi sweep, trong mutex.
+	 */
+	private pruneTriggeringNodes(now: number) {
+		const ttl = Math.max(TRIGGER_ORDER_COOLDOWN_MS, RATCHET_ORDER_COOLDOWN_MS);
+		for (const [signature, startedAt] of this.triggeringNodes) {
+			if (startedAt + ttl <= now) {
+				this.triggeringNodes.delete(signature);
+			}
+		}
+	}
+
 	private async tryTrigger() {
 		const start = Date.now();
 		let ran = false;
 		try {
 			await tryAcquire(this.periodicTaskMutex).runExclusive(async () => {
+				this.pruneTriggeringNodes(Date.now());
 				// CODE-2 med FIX: successfulFireKeys must be cleared even if
 				// updateDLOB() (or any phase) throws between fire and ratchet —
 				// otherwise stale keys suppress ratchet in later rounds.

@@ -602,7 +602,7 @@ export class LiquidatorDerisk {
 			throw e;
 		}
 		const limitPrice = this.calculateOrderLimitPrice(entryPrice, direction);
-		const { auctionStartPrice, auctionEndPrice, oraclePriceOffset } =
+		const { auctionStartPrice, auctionEndPrice, offset } =
 			deriveOracleAuctionParams({
 				direction,
 				oraclePrice: oracle.price,
@@ -620,7 +620,7 @@ export class LiquidatorDerisk {
 			auctionDuration: this.config.deriskAuctionDurationSlots!,
 			auctionStartPrice,
 			auctionEndPrice,
-			oraclePriceOffset,
+			offset,
 		});
 	}
 

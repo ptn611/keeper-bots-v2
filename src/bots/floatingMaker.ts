@@ -288,11 +288,7 @@ export class FloatingPerpMakerBot implements Bot {
 				orderType: OrderType.LIMIT,
 				direction: PositionDirection.LONG,
 				baseAssetAmount: BASE_PRECISION.mul(new BN(1)),
-				oraclePriceOffset: oracleBidSpread
-					.mul(biasNum)
-					.div(biasDenom)
-					.neg()
-					.toNumber(), // limit bid below oracle
+				offset: oracleBidSpread.mul(biasNum).div(biasDenom).neg().toNumber(), // limit bid below oracle (i32 price offset)
 			});
 			console.log(`${this.name} placing long: ${tx0}`);
 
@@ -302,10 +298,7 @@ export class FloatingPerpMakerBot implements Bot {
 				orderType: OrderType.LIMIT,
 				direction: PositionDirection.SHORT,
 				baseAssetAmount: BASE_PRECISION.mul(new BN(1)),
-				oraclePriceOffset: oracleAskSpread
-					.mul(biasNum)
-					.div(biasDenom)
-					.toNumber(), // limit ask above oracle
+				offset: oracleAskSpread.mul(biasNum).div(biasDenom).toNumber(), // limit ask above oracle (i32 price offset)
 			});
 			console.log(`${this.name} placing short: ${tx1}`);
 		}

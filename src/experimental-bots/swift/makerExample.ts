@@ -232,7 +232,7 @@ export class SwiftMaker {
 						setTimeout(async () => {
 							// Determine whether taker used oraclePriceOffset and compute target price at pct into auction
 							const isOracleOffset =
-								signedMsgOrderParams.oraclePriceOffset !== null ||
+								(signedMsgOrderParams.offset ?? 0) !== 0 ||
 								!signedMsgOrderParams.price.eq(ZERO);
 							let price = this.driftClient.getOracleDataForPerpMarket(
 								signedMsgOrderParams.marketIndex
@@ -268,7 +268,7 @@ export class SwiftMaker {
 											: PositionDirection.LONG,
 										baseAssetAmount:
 											signedMsgOrderParams.baseAssetAmount.divn(2),
-										oraclePriceOffset: isOracleOffset ? price.toNumber() : null,
+										offset: isOracleOffset ? price.toNumber() : null,
 										price: isOracleOffset ? ZERO : price,
 										postOnly: PostOnlyParams.MUST_POST_ONLY,
 										bitFlags: OrderParamsBitFlag.ImmediateOrCancel,

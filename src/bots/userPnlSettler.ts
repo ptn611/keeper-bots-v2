@@ -20,7 +20,7 @@ import {
 	DriftMarketInfo,
 	User,
 	PerpPosition,
-	MarketStatus,
+	isVariant,
 	PriorityFeeSubscriber,
 	isOneOfVariant,
 	getVariant,
@@ -51,7 +51,6 @@ import {
 	TransactionExpiredBlockheightExceededError,
 	TransactionInstruction,
 } from '@solana/web3.js';
-import { ENUM_UTILS } from '@velocity-exchange/common';
 
 // =============================================================================
 // CONSTANTS
@@ -1296,10 +1295,9 @@ export class UserPnlSettlerBot implements Bot {
 			);
 
 			// cannot settle pnl in this state
-			const marketIsReduceOnly = ENUM_UTILS.match(
-				perpMarket.status,
-				MarketStatus.REDUCE_ONLY
-			);
+			// tương đương `ENUM_UTILS.match` (so sánh JSON) nhưng dùng isVariant của
+			// SDK ⇒ bỏ phụ thuộc `@velocity-exchange/common` (chưa build trong repo này).
+			const marketIsReduceOnly = isVariant(perpMarket.status, 'reduceOnly');
 
 			if (settlePnlPaused || marketIsReduceOnly) {
 				logger.warn(

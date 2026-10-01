@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import { BN } from '@velocity-exchange/sdk';
 import { selectMakers } from './makerSelection';
-import { MAX_MAKERS_PER_FILL } from './bots/filler';
+import { MAX_MAKERS_PER_FILL } from './makerConstants';
 
 describe('selectMakers', () => {
 	let originalRandom: { (): number; (): number };

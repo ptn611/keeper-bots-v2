@@ -73,6 +73,11 @@ const serializeOrder = (order: Order): SerializedOrder => {
 		auctionStartPrice: order.auctionStartPrice?.toString('hex'),
 		auctionEndPrice: order.auctionEndPrice?.toString('hex'),
 		maxTs: order.maxTs?.toString('hex'),
+		// luôn trả string: `SerializedOrder` khai `trailingPrice`/`callbackRate` là
+		// `string`, và `undefined` sẽ biến thành `null`/omitted khi JSON-IPC
+		// ⇒ deserialize nhận `null` khác với `'00'`. Fallback `'00'` = 0 byte.
+		trailingPrice: order.trailingPrice?.toString('hex') ?? '00',
+		callbackRate: order.callbackRate?.toString('hex') ?? '00',
 	};
 };
 
@@ -155,6 +160,8 @@ export const deserializeOrder = (serializedOrder: SerializedOrder) => {
 		auctionStartPrice: new BN(serializedOrder.auctionStartPrice, 'hex'),
 		auctionEndPrice: new BN(serializedOrder.auctionEndPrice, 'hex'),
 		maxTs: new BN(serializedOrder.maxTs, 'hex'),
+		trailingPrice: new BN(serializedOrder.trailingPrice ?? '00', 'hex'),
+		callbackRate: new BN(serializedOrder.callbackRate ?? '00', 'hex'),
 	};
 };
 
@@ -284,13 +291,13 @@ export const deserializeDLOBNode = (node: SerializedDLOBNode): DLOBNode => {
 	const order = deserializeOrder(node.order);
 	switch (node.type) {
 		case 'TakingLimitOrderNode':
-			return new TakingLimitOrderNode(order, node.userAccount);
+			return new TakingLimitOrderNode(order, node.userAccount, false);
 		case 'RestingLimitOrderNode':
-			return new RestingLimitOrderNode(order, node.userAccount);
+			return new RestingLimitOrderNode(order, node.userAccount, false);
 		case 'FloatingLimitOrderNode':
-			return new FloatingLimitOrderNode(order, node.userAccount);
+			return new FloatingLimitOrderNode(order, node.userAccount, false);
 		case 'MarketOrderNode':
-			return new MarketOrderNode(order, node.userAccount);
+			return new MarketOrderNode(order, node.userAccount, false);
 		case 'SignedMsgOrderNode':
 			return new SignedMsgOrderNode(order, node.userAccount);
 		default:

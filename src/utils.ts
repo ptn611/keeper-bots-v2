@@ -754,8 +754,7 @@ export function logMessageForNodeToFill(
 				),
 				takerPrice: convertToNumber(takerOrder.price, PRICE_PRECISION),
 				takerOrderPrice: getVariant(takerOrder.orderType),
-				takerOrderPriceOffset:
-					takerOrder.oraclePriceOffset / PRICE_PRECISION.toNumber(),
+				takerOrderPriceOffset: takerOrder.offset / PRICE_PRECISION.toNumber(),
 				makers: makerInfos.length,
 				fillType,
 				fillId,
@@ -793,7 +792,7 @@ export function logMessageForNodeToFill(
 						),
 						makerOrderPrice: convertToNumber(makerOrder.price, PRICE_PRECISION),
 						makerOrderPriceOffset:
-							makerOrder.oraclePriceOffset / PRICE_PRECISION.toNumber(),
+							makerOrder.offset / PRICE_PRECISION.toNumber(),
 						fillType,
 						fillId,
 						revertOnFailure,

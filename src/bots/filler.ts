@@ -36,6 +36,7 @@ import {
 	PerpMarkets,
 	MMOraclePriceData,
 } from '@velocity-exchange/sdk';
+import { isTriggered, isAbsorbTriggeredOnly } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
 import {
@@ -95,6 +96,9 @@ import {
 } from '../utils';
 import { selectMakers } from '../makerSelection';
 import { BundleSender, JITO_METRIC_TYPES } from '../bundleSender';
+import { MAX_MAKERS_PER_FILL } from '../makerConstants';
+
+export { MAX_MAKERS_PER_FILL };
 import { Metrics } from '../metrics';
 import { LRUCache } from 'lru-cache';
 import { bs58 } from '@project-serum/anchor/dist/cjs/utils/bytes';
@@ -106,7 +110,6 @@ const TX_COUNT_COOLDOWN_ON_BURST = 10; // send this many tx before resetting bur
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
 const TRIGGER_ORDER_COOLDOWN_MS = 1000; // the time to wait before trying to a node in the triggering map again
-export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
 
 const MAX_POSITIONS_PER_USER = 8;
@@ -1024,6 +1027,17 @@ export class FillerBot extends TxThreaded implements Bot {
 
 				if (!makerNode.userAccount) {
 					continue;
+				}
+
+				// Absorb awareness: skip absorb makers if taker is not a triggered origin
+				const makerOrder = makerNode.order;
+				if (makerOrder && isAbsorbTriggeredOnly(makerOrder.bitFlags)) {
+					// Check if taker is a triggered origin (fired trigger order)
+					const takerOrder = nodeToFill.node.order;
+					if (takerOrder && !isTriggered(takerOrder)) {
+						// Skip absorb maker - only matches triggered takers
+						continue;
+					}
 				}
 
 				if (makerNodesMap.has(makerNode.userAccount!)) {

@@ -18,6 +18,7 @@ import {
 	SignedMsgOrderNode,
 	Order,
 	ZERO,
+	OffsetType,
 	OrderTriggerCondition,
 	PositionDirection,
 	OraclePriceData,
@@ -148,13 +149,18 @@ class DLOBBuilder {
 					order,
 					pubkey,
 					this.slotSubscriber.getSlot(),
+					false,
 					order.baseAssetAmount
 				);
 				counter++;
 			});
 		});
 		for (const signedMsgNode of this.signedMsgOrders.values()) {
-			dlob.insertSignedMsgOrder(signedMsgNode.order, signedMsgNode.userAccount);
+			dlob.insertSignedMsgOrder(
+				signedMsgNode.order,
+				signedMsgNode.userAccount,
+				false
+			);
 			counter++;
 		}
 		logger.debug(`${logPrefix} Built DLOB with ${counter} orders`);
@@ -251,6 +257,11 @@ class DLOBBuilder {
 			orderType: signedMsgOrderParams.orderType,
 			orderId: uuid,
 			slot: new BN(orderSlot),
+			offsetType: signedMsgOrderParams.offsetType ?? OffsetType.Oracle,
+			trailingPrice: signedMsgOrderParams.callbackRate
+				? signedMsgOrderParams.price
+				: ZERO,
+			callbackRate: new BN(signedMsgOrderParams.callbackRate ?? 0),
 			marketIndex: signedMsgOrderParams.marketIndex,
 			marketType: MarketType.PERP,
 			baseAssetAmount: signedMsgOrderParams.baseAssetAmount,
@@ -263,7 +274,7 @@ class DLOBBuilder {
 				0,
 			direction: signedMsgOrderParams.direction,
 			postOnly: false,
-			oraclePriceOffset: signedMsgOrderParams.oraclePriceOffset ?? 0,
+			offset: signedMsgOrderParams.offset ?? 0,
 			maxTs: signedMsgOrderParams.maxTs ?? ZERO,
 			reduceOnly: signedMsgOrderParams.reduceOnly ?? false,
 			triggerCondition:

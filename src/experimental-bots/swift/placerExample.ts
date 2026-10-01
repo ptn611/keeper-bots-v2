@@ -27,6 +27,7 @@ import {
 	SlotSubscriber,
 	UserMap,
 	ZERO,
+	OffsetType,
 } from '@velocity-exchange/sdk';
 import { RuntimeSpec } from 'src/metrics';
 import WebSocket from 'ws';
@@ -289,6 +290,11 @@ export class SwiftPlacer {
 						orderType: signedMsgOrderParams.orderType,
 						orderId: 0,
 						slot: new BN(orderSlot),
+						offsetType: signedMsgOrderParams.offsetType ?? OffsetType.Oracle,
+						trailingPrice: signedMsgOrderParams.callbackRate
+							? signedMsgOrderParams.price
+							: ZERO,
+						callbackRate: new BN(signedMsgOrderParams.callbackRate ?? 0),
 						marketIndex: signedMsgOrderParams.marketIndex,
 						marketType: MarketType.PERP,
 						baseAssetAmount: signedMsgOrderParams.baseAssetAmount,
@@ -298,7 +304,7 @@ export class SwiftPlacer {
 						immediateOrCancel: false,
 						direction: signedMsgOrderParams.direction,
 						postOnly: false,
-						oraclePriceOffset: signedMsgOrderParams.oraclePriceOffset ?? 0,
+						offset: signedMsgOrderParams.offset ?? 0,
 						maxTs: signedMsgOrderParams.maxTs ?? ZERO,
 						reduceOnly: signedMsgOrderParams.reduceOnly ?? false,
 						triggerCondition:

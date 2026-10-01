@@ -5,7 +5,8 @@ import {
 	DLOBNode,
 	ZERO,
 } from '../../protocol-v2/sdk';
-import { MakerNodeMap, MAX_MAKERS_PER_FILL } from './bots/filler';
+import { MakerNodeMap } from './bots/filler';
+import { MAX_MAKERS_PER_FILL } from './makerConstants';
 
 const PROBABILITY_PRECISION = new BN(1000);
 

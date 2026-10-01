@@ -1,4 +1,5 @@
 import {
+	OffsetType,
 	OrderStatus,
 	OrderType,
 	MarketType,
@@ -39,6 +40,12 @@ export type SerializedUserAccount = {
 	hasOpenAuction: boolean;
 };
 
+/**
+ * Lưu ý (contract IPC): consumer PHẢI truy cập theo TÊN field, không theo vị trí.
+ * `trailingPrice`/`callbackRate`/`offsetType` đã được thêm ⇒ `Object.keys().length`
+ * và mọi decode positional sẽ đổi. Runtime serialize luôn trả string cho field
+ * BN (xem `serializeOrder`).
+ */
 export type SerializedOrder = {
 	status: OrderStatus;
 	orderType: OrderType;
@@ -59,13 +66,18 @@ export type SerializedOrder = {
 	existingPositionDirection: PositionDirection;
 	postOnly: boolean;
 	immediateOrCancel: boolean;
-	oraclePriceOffset: number;
+	offset: number;
+	offsetType: OffsetType;
 	auctionDuration: number;
 	auctionStartPrice: string;
 	auctionEndPrice: string;
 	maxTs: string;
 	bitFlags: number;
 	postedSlotTail: number;
+	/// Trailing-stop fields (không serialize: luôn là 0 sau khi round-trip vì
+	/// DLOB không dùng chúng; giữ cho khớp `Order`).
+	trailingPrice: string;
+	callbackRate: string;
 };
 
 export type SerializedSpotPosition = {
