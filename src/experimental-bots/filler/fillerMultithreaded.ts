@@ -1,4 +1,8 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
+import { MAX_MAKERS_PER_FILL } from '../../makerConstants';
+
+// re-export để không phá consumer cũ đang import từ module này
+export { MAX_MAKERS_PER_FILL };
 import {
 	AverageOverSlotsStrategy,
 	BlockhashSubscriber,
@@ -112,7 +116,6 @@ export type MakerNodeMap = Map<string, DLOBNode[]>;
 
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
-export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
 
 const MAX_POSITIONS_PER_USER = 8;

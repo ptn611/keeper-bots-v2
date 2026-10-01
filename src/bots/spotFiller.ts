@@ -1,3 +1,4 @@
+import { MAX_MAKERS_PER_FILL } from '../makerConstants';
 import {
 	DriftClient,
 	SpotMarketAccount,
@@ -98,7 +99,6 @@ const TRIGGER_ORDER_COOLDOWN_MS = 1000; // the time to wait before trying to a n
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
 const SLOTS_UNTIL_JITO_LEADER_TO_SEND = 4;
 const CONFIRM_TX_ATTEMPTS = 2;
-const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
 
 const DUMP_TXS_IN_SIM = false;

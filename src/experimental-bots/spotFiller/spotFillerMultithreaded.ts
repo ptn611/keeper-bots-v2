@@ -69,10 +69,10 @@ import {
 } from '../filler-common/utils';
 import {
 	CACHED_BLOCKHASH_OFFSET,
-	MAX_MAKERS_PER_FILL,
 	MakerNodeMap,
 	TX_CONFIRMATION_BATCH_SIZE,
 } from '../filler/fillerMultithreaded';
+import { MAX_MAKERS_PER_FILL } from '../../makerConstants';
 import {
 	NodeToFillWithBuffer,
 	SerializedNodeToFill,
