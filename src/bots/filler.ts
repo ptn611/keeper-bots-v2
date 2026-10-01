@@ -36,7 +36,11 @@ import {
 	PerpMarkets,
 	MMOraclePriceData,
 } from '@velocity-exchange/sdk';
-import { isTriggered, isAbsorbTriggeredOnly } from '@velocity-exchange/sdk';
+import {
+	isTriggered,
+	mustBeTriggered,
+	isAbsorbTriggeredOnly,
+} from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
 import {
@@ -1029,13 +1033,23 @@ export class FillerBot extends TxThreaded implements Bot {
 					continue;
 				}
 
-				// Absorb awareness: skip absorb makers if taker is not a triggered origin
+				// Absorb awareness: skip absorb makers if taker is not a triggered origin.
+				// Mirror ĐÚNG gate on-chain `is_triggered_origin_taker`
+				// (programs/drift/src/math/matching.rs:18-22):
+				//   !post_only && must_be_triggered() && triggered()
+				// Trước đây chỉ check `isTriggered` ⇒ keeper LỎNG hơn contract, tốn tx
+				// thừa cho post-only / non-trigger taker (contract vẫn chặn, nên không
+				// có rủi ro an toàn, chỉ tốn gas). S1 audit round 3 yêu cầu khớp.
 				const makerOrder = makerNode.order;
 				if (makerOrder && isAbsorbTriggeredOnly(makerOrder.bitFlags)) {
-					// Check if taker is a triggered origin (fired trigger order)
 					const takerOrder = nodeToFill.node.order;
-					if (takerOrder && !isTriggered(takerOrder)) {
-						// Skip absorb maker - only matches triggered takers
+					const isTriggeredOriginTaker =
+						!!takerOrder &&
+						!takerOrder.postOnly &&
+						mustBeTriggered(takerOrder) &&
+						isTriggered(takerOrder);
+					if (!isTriggeredOriginTaker) {
+						// Skip absorb maker - chỉ khớp taker gốc triggered
 						continue;
 					}
 				}
