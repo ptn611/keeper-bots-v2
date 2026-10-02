@@ -19,7 +19,6 @@
 		"@types/minimist": "1.2.5",
 		"@types/mocha": "10.0.6",
 		"@types/node": "24.0.0",
-		"@velocity-exchange/common": "file:../velocity-common/common-ts",
 		"@velocity-exchange/jit-proxy": "file:../jit-proxy/ts/sdk",
 		"@velocity-exchange/sdk": "file:../protocol-v2/sdk",
 		"async": "3.2.5",
